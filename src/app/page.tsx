@@ -1,34 +1,14 @@
 'use client'
 
-import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
-// import io from 'socket.io-client'
-// import Image from 'next/image'
-// import { ChevronDownIcon, ChevronUpIcon } from '@heroicons/react/20/solid'
-// import { Switch } from '@headlessui/react'
+import { useState, useEffect, useRef, useMemo } from 'react'
 import html2canvas from 'html2canvas'
-import domtoimage from 'dom-to-image'
-
-interface Trade {
-  symbol: string
-  price: number
-  amount: number
-  type: 'buy' | 'sell'
-  startTime: Date
-  endTime: Date
-  profit?: number
-  screenshot?: string | null
-}
+import * as domtoimage from 'dom-to-image'
 
 interface TradingPair {
   symbol: string
   baseAsset: string
   quoteAsset: string
   price: string
-}
-
-interface BinanceTicker {
-  symbol: string
-  lastPrice: string
 }
 
 interface TradeData {
@@ -87,7 +67,7 @@ export default function TradingSimulator() {
   const [isLoading, setIsLoading] = useState(false)
   const [isPairSwitching, setIsPairSwitching] = useState(false)
   const [searchTerm, setSearchTerm] = useState('')
-  const [wsConnectionStatus, setWsConnectionStatus] = useState<'disconnected' | 'connecting' | 'connected' | 'error'>('disconnected')
+  const [wsConnectionStatus, setWsConnectionStatus] = useState<'connecting' | 'connected' | 'disconnected' | 'error'>('disconnected')
   const [buttonPosition, setButtonPosition] = useState({ x: typeof window !== 'undefined' ? window.innerWidth - 120 : 300, y: typeof window !== 'undefined' ? window.innerHeight - 120 : 500 })
   const [isDragging, setIsDragging] = useState(false)
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 })
@@ -107,7 +87,6 @@ export default function TradingSimulator() {
   }>({ coin: 'all', type: 'all', period: 'all' })
   const [availableCoins, setAvailableCoins] = useState<string[]>([])
   const [showInvestmentWarning, setShowInvestmentWarning] = useState(false)
-  // const [showFloatingMenu, setShowFloatingMenu] = useState<boolean>(false)
 
   // Yatırım miktarına göre maksimum kaldıraç hesaplama
   const getMaxLeverage = (investmentAmount: number): number => {
@@ -148,7 +127,7 @@ export default function TradingSimulator() {
       // Trade geçmişini yükle
       const savedHistory = localStorage.getItem('tradeHistory')
       if (savedHistory) {
-        const history = JSON.parse(savedHistory).map((trade: Trade) => ({
+        const history = JSON.parse(savedHistory).map((trade: any) => ({
           ...trade,
           startTime: new Date(trade.startTime),
           endTime: new Date(trade.endTime)
@@ -218,7 +197,7 @@ export default function TradingSimulator() {
       // Method 1: dom-to-image (LAB color için daha iyi)
       console.log('Method 1: dom-to-image deneniyor...')
       try {
-        dataUrl = await domtoimage.toPng(element, {
+        dataUrl = await (domtoimage as any).toPng(element, {
           quality: 1.0,
           bgcolor: '#1f2937',
           width: element.offsetWidth,
@@ -235,7 +214,7 @@ export default function TradingSimulator() {
             logging: false,
             useCORS: false,
             allowTaint: true
-          })
+          } as any)
           dataUrl = canvas.toDataURL('image/png')
           console.log('html2canvas basit ayarlar başarılı!')
         } catch (html2Error) {
@@ -323,10 +302,10 @@ export default function TradingSimulator() {
     const fetchTradingPairs = async () => {
       try {
         const response = await fetch('https://api.binance.com/api/v3/ticker/24hr')
-        const data: BinanceTicker[] = await response.json()
+        const data = await response.json()
         const pairs = data
-          .filter((item: BinanceTicker) => item.symbol.endsWith('USDT'))
-          .map((item: BinanceTicker) => ({
+          .filter((item: any) => item.symbol.endsWith('USDT'))
+          .map((item: any) => ({
             symbol: item.symbol,
             baseAsset: item.symbol.replace('USDT', ''),
             quoteAsset: 'USDT',
@@ -349,7 +328,7 @@ export default function TradingSimulator() {
   }, [])
 
   // WebSocket bağlantısı
-  const connectWebSocket = useCallback(() => {
+  const connectWebSocket = (symbol: string) => {
     if (wsRef.current) {
       wsRef.current.close()
     }
@@ -358,59 +337,171 @@ export default function TradingSimulator() {
 
     // Kısa bir gecikme ile bağlantı kur (hızlı geçişlerde sorun çıkmasın)
     setTimeout(() => {
-      if (!selectedPair) {
-        console.warn('WebSocket bağlantısı için seçili çift yok.')
-        setWsConnectionStatus('disconnected')
-        return
-      }
-      const newWs = new WebSocket(`wss://stream.binance.com:9443/ws/${selectedPair.toLowerCase()}@trade`)
+      try {
+        // Mobil cihazları tespit et
+        const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent)
+        
+        const wsUrl = `wss://stream.binance.com:9443/ws/${symbol.toLowerCase()}@trade`
+        console.log(`WebSocket bağlantısı kuruluyor: ${symbol} (${isMobile ? 'Mobil' : 'Masaüstü'})`)
+        
+        wsRef.current = new WebSocket(wsUrl)
 
-      newWs.onopen = () => {
-        console.log(`WebSocket bağlandı: ${selectedPair}`)
-        setWsConnectionStatus('connected')
-      }
+        // Bağlantı timeout'u ekle (mobilde daha uzun süre ver)
+        const connectionTimeout = setTimeout(() => {
+          if (wsRef.current && wsRef.current.readyState === WebSocket.CONNECTING) {
+            console.warn('WebSocket bağlantı timeout - tekrar deneniyor...')
+            wsRef.current.close()
+            setWsConnectionStatus('error')
+            
+            // 3 saniye sonra tekrar dene
+            setTimeout(() => {
+              connectWebSocket(symbol)
+            }, 3000)
+          }
+        }, isMobile ? 10000 : 5000) // Mobilde 10 saniye, masaüstünde 5 saniye
 
-      newWs.onmessage = (event) => {
-        const trade = JSON.parse(event.data)
-        const newPrice = parseFloat(trade.p)
-        setCurrentPrice(newPrice)
-        // setLastPriceUpdate(Date.now())
-        // setShowRealtimePrice(true) // Fiyat güncellendiğinde göster
-
-        // Kısa süre sonra gizle
-        // clearTimeout(hidePriceTimeoutRef.current)
-        // hidePriceTimeoutRef.current = setTimeout(() => {
-        //   setShowRealtimePrice(false)
-        // }, 1000) // 1 saniye sonra gizle
-
-      }
-
-      newWs.onerror = (error) => {
-        console.error(`WebSocket hatası ${selectedPair}:`, error)
-        setWsConnectionStatus('error')
-        // Hata durumunda yeniden bağlanmayı dene
-        setTimeout(connectWebSocket, 5000) // 5 saniye sonra tekrar dene
-      }
-
-      newWs.onclose = (event) => {
-        console.log(`WebSocket bağlantısı kesildi ${selectedPair}:`, event.code, event.reason)
-        setWsConnectionStatus('disconnected')
-        if (!event.wasClean) {
-          // Anormal kapanış durumunda yeniden bağlanmayı dene
-          setTimeout(connectWebSocket, 5000) // 5 saniye sonra tekrar dene
+        wsRef.current.onopen = () => {
+          clearTimeout(connectionTimeout)
+          console.log('WebSocket başarıyla bağlandı:', symbol)
+          setIsPairSwitching(false)
+          setWsConnectionStatus('connected')
         }
-      }
 
-      wsRef.current = newWs
-    }, 200) // 200ms gecikme
+        wsRef.current.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data)
+            const newPrice = parseFloat(data.p)
+            
+            if (isNaN(newPrice)) {
+              console.warn('Geçersiz fiyat verisi:', data.p)
+              return
+            }
+            
+            setCurrentPrice(prevPrice => {
+              // Fiyat animasyonu
+              if (priceUpdateRef.current) {
+                const element = priceUpdateRef.current
+                if (newPrice > prevPrice) {
+                  element.classList.remove('price-down')
+                  element.classList.add('price-up')
+                } else if (newPrice < prevPrice) {
+                  element.classList.remove('price-up')
+                  element.classList.add('price-down')
+                }
+                
+                setTimeout(() => {
+                  element.classList.remove('price-up', 'price-down')
+                }, 500)
+              }
+              
+              return newPrice
+            })
+            
+            // Aktif trade varsa PnL güncelle ve liquidation kontrol et
+            setActiveTradeData(prevTrade => {
+              if (prevTrade && prevTrade.isActive && prevTrade.symbol.toLowerCase() === symbol.toLowerCase()) {
+                console.log(`PnL güncelleniyor: ${symbol} - Fiyat: ${newPrice} - Giriş: ${prevTrade.entryPrice}`)
+                
+                // Liquidation kontrolü
+                if (checkLiquidation(newPrice, prevTrade)) {
+                  console.log(`LİKİDASYON! Fiyat: ${newPrice}, Liq Fiyatı: ${prevTrade.liquidationPrice.toFixed(2)}`)
+                  handleLiquidation(prevTrade, newPrice)
+                  return prevTrade // Trade handleLiquidation içinde kapatılacak
+                }
+                
+                const positionSize = (prevTrade.leverage * prevTrade.investment) / prevTrade.entryPrice
+                let pnl = 0
+                
+                if (prevTrade.type === 'long') {
+                  pnl = (newPrice - prevTrade.entryPrice) * positionSize
+                } else {
+                  pnl = (prevTrade.entryPrice - newPrice) * positionSize
+                }
+                
+                const roi = (pnl / prevTrade.investment) * 100
+                
+                const updatedTrade = {
+                  ...prevTrade,
+                  currentPrice: newPrice,
+                  pnl,
+                  roi
+                }
+                
+                console.log(`Yeni PnL: ${pnl.toFixed(2)} - ROI: ${roi.toFixed(2)}%`)
+                
+                // LocalStorage'ı da güncelle
+                localStorage.setItem('activeTrade', JSON.stringify(updatedTrade))
+                
+                return updatedTrade
+              } else if (prevTrade) {
+                console.log(`PnL güncellenmediği sebep - Trade symbol: ${prevTrade.symbol}, WebSocket symbol: ${symbol}, Active: ${prevTrade.isActive}`)
+              }
+              return prevTrade
+            })
+          } catch (parseError) {
+            console.error('WebSocket mesaj ayrıştırma hatası:', parseError)
+          }
+        }
 
-    return () => {
-      if (wsRef.current) {
-        console.log(`WebSocket bağlantısı temizleniyor: ${selectedPair}`)
-        wsRef.current.close()
+        wsRef.current.onerror = (error) => {
+          clearTimeout(connectionTimeout)
+          console.error('WebSocket bağlantı hatası:', {
+            symbol,
+            error: error.type || 'Bilinmeyen hata',
+            timestamp: new Date().toLocaleTimeString(),
+            url: wsUrl,
+            userAgent: navigator.userAgent.includes('Mobile') ? 'Mobil' : 'Masaüstü',
+            network: navigator.onLine ? 'Çevrimiçi' : 'Çevrimdışı'
+          })
+          setIsPairSwitching(false)
+          setWsConnectionStatus('error')
+          
+          // Mobilde daha sık yeniden deneme
+          const retryDelay = isMobile ? 3000 : 5000
+          setTimeout(() => {
+            if (wsRef.current?.readyState === WebSocket.CLOSED) {
+              console.log(`WebSocket yeniden bağlanmaya çalışılıyor... (${retryDelay/1000}s sonra)`)
+              connectWebSocket(symbol)
+            }
+          }, retryDelay)
+        }
+
+        wsRef.current.onclose = (event) => {
+          clearTimeout(connectionTimeout)
+          console.log('WebSocket bağlantısı kapandı:', {
+            symbol,
+            code: event.code,
+            reason: event.reason || 'Sebep belirtilmedi',
+            wasClean: event.wasClean,
+            device: isMobile ? 'Mobil' : 'Masaüstü'
+          })
+          setIsPairSwitching(false)
+          setWsConnectionStatus('disconnected')
+          
+          // Beklenmeyen kapanma durumunda yeniden bağlan (kod 1006 = abnormal closure)
+          if (!event.wasClean && event.code === 1006) {
+            console.log('Beklenmeyen bağlantı kopması - 2 saniye sonra yeniden bağlanılıyor...')
+            setTimeout(() => {
+              connectWebSocket(symbol)
+            }, 2000)
+          }
+        }
+      } catch (connectionError) {
+        console.error('WebSocket bağlantı kurma hatası:', {
+          error: connectionError,
+          symbol,
+          timestamp: new Date().toLocaleTimeString()
+        })
+        setWsConnectionStatus('error')
+        setIsPairSwitching(false)
+        
+        // 5 saniye sonra tekrar dene
+        setTimeout(() => {
+          connectWebSocket(symbol)
+        }, 5000)
       }
-    }
-  }, [wsRef, selectedPair, setCurrentPrice, setWsConnectionStatus])
+    }, 100)
+  }
 
   // Trading çifti değiştiğinde WebSocket'i yeniden bağla ve fiyatı güncelle
   useEffect(() => {
@@ -421,18 +512,22 @@ export default function TradingSimulator() {
         const newPrice = parseFloat(selectedPairData.price)
         setCurrentPrice(prevPrice => {
           if (prevPrice !== newPrice) {
-            // console.log(`Selected pair price updated: ${selectedPairData.symbol} - ${newPrice}`)
+            console.log(`Fiyat güncellendi: ${selectedPair} - ${prevPrice} -> ${newPrice}`)
             return newPrice
           }
           return prevPrice
         })
       }
       
-      // WebSocket bağlantısını başlat
-      connectWebSocket()
+      // WebSocket bağlantısını kur
+      connectWebSocket(selectedPair)
     }
-    // connectWebSocket zaten useCallback ile sarıldığı için buraya eklenmeli
-  }, [selectedPair, tradingPairs, connectWebSocket]) 
+    return () => {
+      if (wsRef.current) {
+        wsRef.current.close()
+      }
+    }
+  }, [selectedPair, tradingPairs])
 
   // Liquidation price hesaplama
   const calculateLiquidationPrice = (entryPrice: number, leverage: number, type: 'long' | 'short') => {
@@ -447,6 +542,43 @@ export default function TradingSimulator() {
     } else {
       return entryPrice + priceChange
     }
+  }
+
+  // Liquidation kontrolü
+  const checkLiquidation = (currentPrice: number, tradeData: TradeData) => {
+    if (tradeData.type === 'long' && currentPrice <= tradeData.liquidationPrice) {
+      return true
+    } else if (tradeData.type === 'short' && currentPrice >= tradeData.liquidationPrice) {
+      return true
+    }
+    return false
+  }
+
+  // Liquidation işlemi
+  const handleLiquidation = (tradeData: TradeData, currentPrice: number) => {
+    const totalLoss = -tradeData.investment // Tüm yatırım kaybedilir
+    
+    // Trade'i geçmişe kaydet (liquidation olarak)
+    const liquidatedTrade = {
+      ...tradeData,
+      currentPrice,
+      pnl: totalLoss,
+      roi: -100
+    }
+    saveTradeToHistory(liquidatedTrade, 'liquidated')
+    
+    setLiquidationData({
+      loss: totalLoss,
+      price: currentPrice
+    })
+    
+    setShowLiquidationModal(true)
+    
+    // Trade'i kapat
+    setTimeout(() => {
+      setActiveTradeData(null)
+      localStorage.removeItem('activeTrade')
+    }, 100)
   }
 
   // Trade başlat
@@ -482,7 +614,7 @@ export default function TradingSimulator() {
         setSelectedPair(newTrade.symbol)
       } else {
         // Aynı sembol ise WebSocket'ı yeniden bağla (trade bilgilerini alır)
-        connectWebSocket()
+        connectWebSocket(newTrade.symbol)
       }
       
       setIsLoading(false)
@@ -653,7 +785,7 @@ export default function TradingSimulator() {
     })
   }
 
-  const handleMouseMove = useCallback((e: MouseEvent) => {
+  const handleMouseMove = (e: MouseEvent) => {
     if (isDragging) {
       const newX = Math.max(10, Math.min(window.innerWidth - 170, e.clientX - dragStart.x))
       const newY = Math.max(10, Math.min(window.innerHeight - 70, e.clientY - dragStart.y))
@@ -666,9 +798,9 @@ export default function TradingSimulator() {
       
       setButtonPosition({ x: newX, y: newY })
     }
-  }, [isDragging, dragStart.x, dragStart.y, buttonPosition.x, buttonPosition.y, setButtonPosition, setHasMoved])
+  }
 
-  const handleTouchMove = useCallback((e: TouchEvent) => {
+  const handleTouchMove = (e: TouchEvent) => {
     if (isDragging) {
       e.preventDefault()
       const touch = e.touches[0]
@@ -683,9 +815,9 @@ export default function TradingSimulator() {
       
       setButtonPosition({ x: newX, y: newY })
     }
-  }, [isDragging, dragStart.x, dragStart.y, buttonPosition.x, buttonPosition.y, setButtonPosition, setHasMoved])
+  }
 
-  const handleDragEnd = useCallback(() => {
+  const handleDragEnd = () => {
     if (isDragging) {
       setIsDragging(false)
       // Pozisyonu localStorage'a kaydet
@@ -694,7 +826,7 @@ export default function TradingSimulator() {
       // Kısa süre sonra hasMoved'i sıfırla
       setTimeout(() => setHasMoved(false), 100)
     }
-  }, [isDragging, buttonPosition, setIsDragging, setHasMoved])
+  }
 
   // Aktif trade varsa onun sembolüne WebSocket bağla
   useEffect(() => {
@@ -746,14 +878,16 @@ export default function TradingSimulator() {
     }
 
     return () => {
-      document.body.style.overflow = 'auto'
-      document.body.style.touchAction = 'auto'
+      // Scroll'u tekrar aktif et
+      document.body.style.overflow = ''
+      document.body.style.touchAction = ''
+      
       document.removeEventListener('mousemove', handleGlobalMouseMove)
       document.removeEventListener('mouseup', handleGlobalMouseUp)
       document.removeEventListener('touchmove', handleGlobalTouchMove)
       document.removeEventListener('touchend', handleGlobalTouchEnd)
     }
-  }, [isDragging, handleDragEnd, handleMouseMove, handleTouchMove])
+  }, [isDragging, dragStart, buttonPosition])
   // Filtrelenmiş trading çiftleri
   const filteredPairs = tradingPairs.filter(pair => 
     pair.symbol.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -1037,7 +1171,7 @@ export default function TradingSimulator() {
                     <div className="mt-3 p-3 bg-red-900/30 border border-red-500/50 rounded-xl flex items-center space-x-2 animate-pulse">
                       <span className="text-red-400 text-lg">⚠️</span>
                       <span className="text-red-300 text-sm font-medium">
-                        Maksimum yatırım miktarı $15,000&apos;dır. Daha fazla yatıramazsınız!
+                        Maksimum yatırım miktarı $15,000'dır. Daha fazla yatıramazsınız!
                       </span>
                     </div>
                   )}
@@ -1383,12 +1517,11 @@ export default function TradingSimulator() {
                             } else {
                               alert(`📝 Manuel kopyalama:\n\n${demoShareText}`)
                             }
-                          } catch (_error) {
-                            console.error('Kopyalama hatası:', _error)
+                          } catch (error) {
                             alert(`📝 Manuel kopyalama:\n\n${demoShareText}`)
+                          } finally {
+                            document.body.removeChild(textArea)
                           }
-                          // Geçici textarea'yı kaldır
-                          document.body.removeChild(textArea)
                           
                         } catch (error) {
                           console.error('Demo paylaşım hatası:', error)
@@ -1440,9 +1573,10 @@ export default function TradingSimulator() {
             }}
           >
             <button
-              onClick={() => {
-                if (!hasMoved) {
-                  // setShowFloatingMenu((prev: boolean) => !prev)
+              onClick={(e) => {
+                // Sadece hareket etmediyse close işlemini yap
+                if (!hasMoved && !isDragging) {
+                  closeTrade()
                 }
               }}
               onMouseDown={handleMouseDown}
@@ -1521,9 +1655,10 @@ export default function TradingSimulator() {
                       <div className="text-sm text-blue-200">
                         <p className="font-medium mb-1">Kullanıcı adınız:</p>
                         <ul className="text-xs space-y-1 text-blue-300">
-                          <li>• Screenshot&apos;ta görünecek</li>
+                          <li>• Screenshot'ta görünecek</li>
                           <li>• Sosyal medya paylaşımlarında yer alacak</li>
                           <li>• Maksimum 20 karakter</li>
+                          <li>• Bir kez kaydedilir, sonra hatırlanır</li>
                         </ul>
                       </div>
                     </div>
@@ -1782,7 +1917,7 @@ export default function TradingSimulator() {
                           // Method 1: dom-to-image
                           console.log('Paylaşım için dom-to-image deneniyor...')
                           try {
-                            dataUrl = await domtoimage.toPng(element, {
+                            dataUrl = await (domtoimage as any).toPng(element, {
                               quality: 1.0,
                               bgcolor: '#1f2937',
                               width: element.offsetWidth,
@@ -1802,7 +1937,7 @@ export default function TradingSimulator() {
                                 logging: false,
                                 useCORS: false,
                                 allowTaint: true
-                              })
+                              } as any)
                               
                               dataUrl = canvas.toDataURL('image/png', 1.0)
                               // Canvas'dan blob oluştur
