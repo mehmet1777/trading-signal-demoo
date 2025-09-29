@@ -1,14 +1,34 @@
 'use client'
 
-import { useState, useEffect, useRef, useMemo } from 'react'
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
+import io from 'socket.io-client'
+import Image from 'next/image'
+import { ChevronDownIcon, ChevronUpIcon } from '@heroicons/react/20/solid'
+import { Switch } from '@headlessui/react'
 import html2canvas from 'html2canvas'
 import * as domtoimage from 'dom-to-image'
+
+interface Trade {
+  symbol: string
+  price: number
+  amount: number
+  type: 'buy' | 'sell'
+  startTime: Date
+  endTime: Date
+  profit?: number
+  screenshot?: string | null
+}
 
 interface TradingPair {
   symbol: string
   baseAsset: string
   quoteAsset: string
   price: string
+}
+
+interface BinanceTicker {
+  symbol: string
+  lastPrice: string
 }
 
 interface TradeData {
@@ -127,7 +147,7 @@ export default function TradingSimulator() {
       // Trade geçmişini yükle
       const savedHistory = localStorage.getItem('tradeHistory')
       if (savedHistory) {
-        const history = JSON.parse(savedHistory).map((trade: any) => ({
+        const history = JSON.parse(savedHistory).map((trade: Trade) => ({
           ...trade,
           startTime: new Date(trade.startTime),
           endTime: new Date(trade.endTime)
@@ -197,7 +217,7 @@ export default function TradingSimulator() {
       // Method 1: dom-to-image (LAB color için daha iyi)
       console.log('Method 1: dom-to-image deneniyor...')
       try {
-        dataUrl = await (domtoimage as any).toPng(element, {
+        dataUrl = await domtoimage.toPng(element, {
           quality: 1.0,
           bgcolor: '#1f2937',
           width: element.offsetWidth,
@@ -214,7 +234,7 @@ export default function TradingSimulator() {
             logging: false,
             useCORS: false,
             allowTaint: true
-          } as any)
+          })
           dataUrl = canvas.toDataURL('image/png')
           console.log('html2canvas basit ayarlar başarılı!')
         } catch (html2Error) {
@@ -302,10 +322,10 @@ export default function TradingSimulator() {
     const fetchTradingPairs = async () => {
       try {
         const response = await fetch('https://api.binance.com/api/v3/ticker/24hr')
-        const data = await response.json()
+        const data: BinanceTicker[] = await response.json()
         const pairs = data
-          .filter((item: any) => item.symbol.endsWith('USDT'))
-          .map((item: any) => ({
+          .filter((item: BinanceTicker) => item.symbol.endsWith('USDT'))
+          .map((item: BinanceTicker) => ({
             symbol: item.symbol,
             baseAsset: item.symbol.replace('USDT', ''),
             quoteAsset: 'USDT',
@@ -512,22 +532,18 @@ export default function TradingSimulator() {
         const newPrice = parseFloat(selectedPairData.price)
         setCurrentPrice(prevPrice => {
           if (prevPrice !== newPrice) {
-            console.log(`Fiyat güncellendi: ${selectedPair} - ${prevPrice} -> ${newPrice}`)
+            // console.log(`Selected pair price updated: ${selectedPairData.symbol} - ${newPrice}`)
             return newPrice
           }
           return prevPrice
         })
       }
       
-      // WebSocket bağlantısını kur
-      connectWebSocket(selectedPair)
+      // WebSocket bağlantısını başlat
+      connectWebSocket()
     }
-    return () => {
-      if (wsRef.current) {
-        wsRef.current.close()
-      }
-    }
-  }, [selectedPair, tradingPairs])
+    // connectWebSocket zaten useCallback ile sarıldığı için buraya eklenmeli
+  }, [selectedPair, tradingPairs, connectWebSocket]) 
 
   // Liquidation price hesaplama
   const calculateLiquidationPrice = (entryPrice: number, leverage: number, type: 'long' | 'short') => {
@@ -878,16 +894,14 @@ export default function TradingSimulator() {
     }
 
     return () => {
-      // Scroll'u tekrar aktif et
-      document.body.style.overflow = ''
-      document.body.style.touchAction = ''
-      
+      document.body.style.overflow = 'auto'
+      document.body.style.touchAction = 'auto'
       document.removeEventListener('mousemove', handleGlobalMouseMove)
       document.removeEventListener('mouseup', handleGlobalMouseUp)
       document.removeEventListener('touchmove', handleGlobalTouchMove)
       document.removeEventListener('touchend', handleGlobalTouchEnd)
     }
-  }, [isDragging, dragStart, buttonPosition])
+  }, [isDragging, handleDragEnd, handleMouseMove, handleTouchMove])
   // Filtrelenmiş trading çiftleri
   const filteredPairs = tradingPairs.filter(pair => 
     pair.symbol.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -1917,7 +1931,7 @@ export default function TradingSimulator() {
                           // Method 1: dom-to-image
                           console.log('Paylaşım için dom-to-image deneniyor...')
                           try {
-                            dataUrl = await (domtoimage as any).toPng(element, {
+                            dataUrl = await domtoimage.toPng(element, {
                               quality: 1.0,
                               bgcolor: '#1f2937',
                               width: element.offsetWidth,
@@ -1937,7 +1951,7 @@ export default function TradingSimulator() {
                                 logging: false,
                                 useCORS: false,
                                 allowTaint: true
-                              } as any)
+                              })
                               
                               dataUrl = canvas.toDataURL('image/png', 1.0)
                               // Canvas'dan blob oluştur
