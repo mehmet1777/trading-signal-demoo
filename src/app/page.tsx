@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useRef, useMemo } from 'react'
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import html2canvas from 'html2canvas'
 import * as domtoimage from 'dom-to-image'
 
@@ -41,18 +41,24 @@ interface TradeHistory {
   status: 'completed' | 'liquidated'
 }
 
-interface TradeStats {
-  totalTrades: number
-  winningTrades: number
-  losingTrades: number
-  liquidatedTrades: number
-  winRate: number
-  totalPnL: number
-  totalROI: number
-  avgROI: number
-  avgDuration: number
-  bestTrade: TradeHistory | null
-  worstTrade: TradeHistory | null
+interface BinanceTickerItem {
+  symbol: string
+  lastPrice: string
+  [key: string]: string | number
+}
+
+interface DomToImage {
+  toPng(element: HTMLElement, options?: unknown): Promise<string>
+}
+
+interface Html2CanvasOptions {
+  logging?: boolean
+  useCORS?: boolean
+  allowTaint?: boolean
+  backgroundColor?: string | null
+  scale?: number
+  width?: number
+  height?: number
 }
 
 export default function TradingSimulator() {
@@ -127,7 +133,7 @@ export default function TradingSimulator() {
       // Trade geçmişini yükle
       const savedHistory = localStorage.getItem('tradeHistory')
       if (savedHistory) {
-        const history = JSON.parse(savedHistory).map((trade: any) => ({
+        const history = JSON.parse(savedHistory).map((trade: TradeHistory & { startTime: string, endTime: string }) => ({
           ...trade,
           startTime: new Date(trade.startTime),
           endTime: new Date(trade.endTime)
@@ -197,7 +203,7 @@ export default function TradingSimulator() {
       // Method 1: dom-to-image (LAB color için daha iyi)
       console.log('Method 1: dom-to-image deneniyor...')
       try {
-        dataUrl = await (domtoimage as any).toPng(element, {
+        dataUrl = await (domtoimage as unknown as DomToImage).toPng(element, {
           quality: 1.0,
           bgcolor: '#1f2937',
           width: element.offsetWidth,
@@ -214,7 +220,7 @@ export default function TradingSimulator() {
             logging: false,
             useCORS: false,
             allowTaint: true
-          } as any)
+          } as Html2CanvasOptions)
           dataUrl = canvas.toDataURL('image/png')
           console.log('html2canvas basit ayarlar başarılı!')
         } catch (html2Error) {
@@ -304,8 +310,8 @@ export default function TradingSimulator() {
         const response = await fetch('https://api.binance.com/api/v3/ticker/24hr')
         const data = await response.json()
         const pairs = data
-          .filter((item: any) => item.symbol.endsWith('USDT'))
-          .map((item: any) => ({
+          .filter((item: BinanceTickerItem) => item.symbol.endsWith('USDT'))
+          .map((item: BinanceTickerItem) => ({
             symbol: item.symbol,
             baseAsset: item.symbol.replace('USDT', ''),
             quoteAsset: 'USDT',
@@ -328,7 +334,7 @@ export default function TradingSimulator() {
   }, [])
 
   // WebSocket bağlantısı
-  const connectWebSocket = (symbol: string) => {
+  const connectWebSocket = useCallback((symbol: string) => {
     if (wsRef.current) {
       wsRef.current.close()
     }
@@ -501,7 +507,7 @@ export default function TradingSimulator() {
         }, 5000)
       }
     }, 100)
-  }
+  }, [])
 
   // Trading çifti değiştiğinde WebSocket'i yeniden bağla ve fiyatı güncelle
   useEffect(() => {
@@ -1517,7 +1523,7 @@ export default function TradingSimulator() {
                             } else {
                               alert(`📝 Manuel kopyalama:\n\n${demoShareText}`)
                             }
-                          } catch (error) {
+                          } catch {
                             alert(`📝 Manuel kopyalama:\n\n${demoShareText}`)
                           } finally {
                             document.body.removeChild(textArea)
@@ -1917,7 +1923,7 @@ export default function TradingSimulator() {
                           // Method 1: dom-to-image
                           console.log('Paylaşım için dom-to-image deneniyor...')
                           try {
-                            dataUrl = await (domtoimage as any).toPng(element, {
+                            dataUrl = await (domtoimage as unknown as DomToImage).toPng(element, {
                               quality: 1.0,
                               bgcolor: '#1f2937',
                               width: element.offsetWidth,
@@ -1937,7 +1943,7 @@ export default function TradingSimulator() {
                                 logging: false,
                                 useCORS: false,
                                 allowTaint: true
-                              } as any)
+                              } as Html2CanvasOptions)
                               
                               dataUrl = canvas.toDataURL('image/png', 1.0)
                               // Canvas'dan blob oluştur
